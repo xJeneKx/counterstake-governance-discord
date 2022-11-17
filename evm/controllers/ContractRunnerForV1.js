@@ -1,11 +1,10 @@
 const mutex = require('ocore/mutex');
-const Moralis = require("moralis/node");
 const { ethers } = require("ethers");
 
 const sleep = require('../../utils/sleep')
-const getChainNameForMoralis = require('../../utils/getChainNameForMoralis');
 const Web3_addresses = require('../../db/Web3_addresses');
 const { getAbiByType } = require('../abi/getAbiByType');
+const { getNormalTransactions } = require('../api/getNormalTransactions');
 const { getInternalTransactions } = require('../api/getInternalTransactions');
 const { eventsForV1 } = require('../eventsForV1');
 const DataFetcher = require('./DataFetcher');
@@ -69,15 +68,9 @@ class ContractRunnerForV1 {
 	}
 
 	async #getTransactions(chain, address, lastBlock, r = 0) {
-		const options = {
-			chain,
-			address,
-			from_block: lastBlock,
-		};
-
 		try {
-			const transactions = await Moralis.Web3API.account.getTransactions(options);
-			return transactions.result.filter(v => v.to_address === address.toLowerCase()).reverse();
+			const transactions = await getNormalTransactions(chain, address, lastBlock);
+			return transactions.filter(v => v.to === address.toLowerCase()).reverse();
 		} catch (e) {
 			if (!r || r <= 2) {
 				console.error('repeat getTransactions');
@@ -176,7 +169,6 @@ class ContractRunnerForV1 {
 		}
 		console.error('exec start', (new Date()).toISOString());
 		for (let network in this.#contracts) {
-			const chainName = getChainNameForMoralis(network, !!process.env.testnet);
 			const c = this.#contracts[network];
 			if (!c || !c.length) continue;
 
@@ -184,7 +176,7 @@ class ContractRunnerForV1 {
 				const contract = c[i];
 				const meta = contract.meta;
 				const lastBlock = await Web3_addresses.getLastBlockByAddress(contract.address);
-				const transactions = await this.#getTransactions(chainName, contract.address, lastBlock);
+				const transactions = await this.#getTransactions(network, contract.address, lastBlock);
 
 				if (transactions.length) {
 					let lb = 0;

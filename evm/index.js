@@ -7,8 +7,6 @@ const ContractRunnerForV1 = require('./controllers/ContractRunnerForV1');
 
 const { eventsForV1 } = require('./eventsForV1');
 
-const moralis = require('./moralis/index');
-
 function generateMetaForEventsInV1() {
 	for (let type in eventsForV1) {
 		const t = eventsForV1[type];
@@ -41,7 +39,6 @@ async function init() {
 	generateMetaForEventsInV1();
 	const bridges = new Bridges();
 	await bridges.init();
-	await moralis.init();
 
 	const contractManager = new ContractManager();
 	const contractManagerOfV1 = new ContractRunnerForV1();

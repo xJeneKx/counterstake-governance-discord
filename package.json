@@ -7,7 +7,6 @@
 		"dotenv": "^8.2.0",
 		"ethers": "^5.6.8",
 		"governance_events": "git+https://github.com/byteball/governance_events.git",
-		"moralis": "^1.8.0",
 		"ocore": "git+https://github.com/byteball/ocore.git"
 	},
 	"resolutions": {

@@ -30,12 +30,6 @@ exports.ws_nodes = {
 	Polygon: process.env.ws_nodes_Polygon,
 }
 
-exports.moralis = {
-	serverUrl: process.env.moralis_serverUrl,
-	appId: process.env.moralis_appId,
-	masterKey: process.env.moralis_masterKey,
-}
-
 exports.scan_api_keys = {
 	Ethereum: process.env.eth_scan_api_key,
 	BSC: process.env.bsc_scan_api_key,
