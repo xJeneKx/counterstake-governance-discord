@@ -47,9 +47,10 @@ class Provider {
 	}
 
 	#closeFromCheck() {
-		this._provider.destroy();
 		this.#lastBlock = 0;
 		this.#lastBlockFromEvent = 0;
+		if (this._provider.destroyed) { return; }
+		this._provider.destroy();
 	}
 	
 	startSubscribeCheck() {
@@ -63,22 +64,29 @@ class Provider {
 			this.#lastBlock = this.#lastBlockFromEvent;
 		}, CHECK_INTERVAL);
 	}
+
+	#waitOnOpen() {
+		return new Promise((resolve) => {
+			this._provider.websocket.once('open', () => {
+				resolve();
+			});	
+		});	
+	}	
 	
-	#createProvider() {
+	
+	async #createProvider() {
 		console.log(`[Provider[${this.#network}].ws] create provider`);
 		this._provider = new ethers.WebSocketProvider(this.#url);
 
-
-		this._provider.websocket.on('open', () => {
-			this.#onOpen();
-		});
 		this._provider.websocket.on('close', (code) => {
 			this.#onClose(code);
 		});
 		this._provider.websocket.on('error', (error) => {
 			this.#onError(error);
 		});
-		
+
+		await this.#waitOnOpen();
+		this.#onOpen();
 		
 		this._provider.on('block', (lastBlock) => {
 			this.#lastBlockFromEvent = lastBlock;
@@ -91,6 +99,7 @@ class Provider {
 
 	#onError(error) {
 		console.error(`[Provider[${this.#network}].ws_error]:`, error);
+		if (this._provider.destroyed) { return; }
 		this._provider.destroy();
 	}
 
