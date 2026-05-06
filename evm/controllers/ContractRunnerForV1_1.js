@@ -12,6 +12,8 @@ const { withBoundedRetry } = require('../utils/boundedRetry');
 
 const REPLAY_INTERVAL = 12 * 60 * 60 * 1000;
 const MAX_LOG_RANGE_BLOCKS = 5000;
+const KAVA_MAX_LOG_RANGE_BLOCKS = 1000;
+const KAVA_RPC_TIMEOUT_MS = 60 * 1000;
 
 function isBlockRangeTooLargeError(error) {
 	const codes = [
@@ -39,6 +41,7 @@ class ContractRunnerForV1_1 {
 	#providers = {};
 	#bootstrapBlocks = {};
 	#intervalInitialized = {};
+	#pendingReplay = {};
 
 	setProvider(network, provider) {
 		this.#providers[network] = provider;
@@ -46,42 +49,55 @@ class ContractRunnerForV1_1 {
 
 	setContracts(network, contracts) {
 		this.#contracts[network] = contracts || [];
-		if (this.#intervalInitialized[network] || !this.#contracts[network].length) {
+		if (!this.#contracts[network].length) {
 			return;
 		}
 
+		if (!this.#intervalInitialized[network]) {
+			setInterval(this.#exec.bind(this, network), REPLAY_INTERVAL);
+			this.#intervalInitialized[network] = true;
+		}
+
 		this.#exec(network);
-		setInterval(this.#exec.bind(this, network), REPLAY_INTERVAL);
-		this.#intervalInitialized[network] = true;
 	}
 
 	async #exec(network) {
 		const unlock = await mutex.lockOrSkip(`ContractRunnerForV1_1.${network}`);
 		if (!unlock) {
+			this.#pendingReplay[network] = true;
 			return;
 		}
 
+		let fatalError = null;
+		let replayAgain = false;
 		try {
 			const provider = this.#providers[network];
 			const contracts = this.#contracts[network];
-			if (!provider || !contracts || !contracts.length) {
-				return;
-			}
-
-			const latestHead = await withBoundedRetry(`${network}:getBlockNumber`, () => provider.getBlockNumber());
-			for (let i = 0; i < contracts.length; i++) {
-				await this.#replayContract(network, provider, contracts[i], latestHead);
+			if (provider && contracts && contracts.length) {
+				const latestHead = await this.#withNetworkRetry(network, `${network}:getBlockNumber`, () => provider.getBlockNumber());
+				for (let i = 0; i < contracts.length; i++) {
+					await this.#replayContract(network, provider, contracts[i], latestHead);
+				}
 			}
 		} catch (e) {
 			if (isBlockRangeTooLargeError(e)) {
 				console.error(`ContractRunnerForV1_1[${network}] retryable replay error:`, e);
-				return;
+			} else {
+				console.error(`ContractRunnerForV1_1[${network}] failed:`, e);
+				fatalError = e;
 			}
-
-			console.error(`ContractRunnerForV1_1[${network}] failed:`, e);
-			throw e;
 		} finally {
+			replayAgain = this.#pendingReplay[network];
+			this.#pendingReplay[network] = false;
 			unlock();
+		}
+
+		if (fatalError) {
+			throw fatalError;
+		}
+
+		if (replayAgain) {
+			this.#exec(network);
 		}
 	}
 
@@ -101,7 +117,7 @@ class ContractRunnerForV1_1 {
 
 		for (let i = 0; i < specs.length; i++) {
 			const spec = specs[i];
-			const logs = await this.#queryFilterInChunks(c, spec.eventName, fromBlock, latestHead);
+			const logs = await this.#queryFilterInChunks(network, c, spec.eventName, fromBlock, latestHead);
 			for (let j = 0; j < logs.length; j++) {
 				entries.push({
 					log: logs[j],
@@ -126,22 +142,24 @@ class ContractRunnerForV1_1 {
 		await V1_1.deleteEventDedupeUpToBlock(network, contract.address, latestHead);
 	}
 
-	async #queryFilterInChunks(contract, eventName, fromBlock, toBlock) {
+	async #queryFilterInChunks(network, contract, eventName, fromBlock, toBlock) {
 		if (fromBlock > toBlock) {
 			return [];
 		}
 
-		if (toBlock - fromBlock + 1 > MAX_LOG_RANGE_BLOCKS) {
+		const maxRangeBlocks = this.#getMaxLogRangeBlocks(network);
+		if (toBlock - fromBlock + 1 > maxRangeBlocks) {
 			const logs = [];
-			for (let chunkFrom = fromBlock; chunkFrom <= toBlock; chunkFrom += MAX_LOG_RANGE_BLOCKS) {
-				const chunkTo = Math.min(chunkFrom + MAX_LOG_RANGE_BLOCKS - 1, toBlock);
-				logs.push(...await this.#queryFilterInChunks(contract, eventName, chunkFrom, chunkTo));
+			for (let chunkFrom = fromBlock; chunkFrom <= toBlock; chunkFrom += maxRangeBlocks) {
+				const chunkTo = Math.min(chunkFrom + maxRangeBlocks - 1, toBlock);
+				logs.push(...await this.#queryFilterInChunks(network, contract, eventName, chunkFrom, chunkTo));
 			}
 			return logs;
 		}
 
 		try {
-			return await withBoundedRetry(
+			return await this.#withNetworkRetry(
+				network,
 				`${contract.target || contract.address}:${eventName}:${fromBlock}-${toBlock}`,
 				() => contract.queryFilter(eventName, fromBlock, toBlock)
 			);
@@ -151,22 +169,43 @@ class ContractRunnerForV1_1 {
 			}
 
 			const middleBlock = Math.floor((fromBlock + toBlock) / 2);
-			const leftLogs = await this.#queryFilterInChunks(contract, eventName, fromBlock, middleBlock);
-			const rightLogs = await this.#queryFilterInChunks(contract, eventName, middleBlock + 1, toBlock);
+			const leftLogs = await this.#queryFilterInChunks(network, contract, eventName, fromBlock, middleBlock);
+			const rightLogs = await this.#queryFilterInChunks(network, contract, eventName, middleBlock + 1, toBlock);
 			return leftLogs.concat(rightLogs);
 		}
+	}
+
+	#getMaxLogRangeBlocks(network) {
+		return network === 'Kava' ? KAVA_MAX_LOG_RANGE_BLOCKS : MAX_LOG_RANGE_BLOCKS;
+	}
+
+	#withNetworkRetry(network, label, operation) {
+		const options = network === 'Kava'
+			? { timeoutMs: KAVA_RPC_TIMEOUT_MS }
+			: undefined;
+		return withBoundedRetry(label, operation, options);
 	}
 
 	#getReplaySpecs(contract, provider) {
 		switch (contract.type) {
 			case 'governance':
-				return [{
-					eventName: 'Withdrawal',
-					handle: async (log) => governanceHandlers.withdrawal(contract, ...log.args, log),
-				}];
+				return [
+					{
+						eventName: 'Deposit',
+						handle: async (log) => governanceHandlers.deposit(contract, ...log.args, log),
+					},
+					{
+						eventName: 'Withdrawal',
+						handle: async (log) => governanceHandlers.withdrawal(contract, ...log.args, log),
+					},
+				];
 
 			case 'Uint':
 				return [
+					{
+						eventName: 'Commit',
+						handle: async (log) => uintHandlers.commit(contract, ...log.args, log),
+					},
 					{
 						eventName: 'Vote',
 						handle: async (log) => uintHandlers.vote(contract, ...log.args, log),
@@ -180,6 +219,10 @@ class ContractRunnerForV1_1 {
 			case 'UintArray':
 				return [
 					{
+						eventName: 'Commit',
+						handle: async (log) => uintArrayHandlers.commit(contract, ...log.args, log),
+					},
+					{
 						eventName: 'Vote',
 						handle: async (log) => uintArrayHandlers.vote(contract, ...log.args, log),
 					},
@@ -191,6 +234,10 @@ class ContractRunnerForV1_1 {
 
 			case 'address':
 				return [
+					{
+						eventName: 'Commit',
+						handle: async (log) => addressHandlers.commit(contract, ...log.args, log),
+					},
 					{
 						eventName: 'Vote',
 						handle: async (log) => addressHandlers.vote(contract, ...log.args, log),
@@ -216,7 +263,7 @@ class ContractRunnerForV1_1 {
 		}
 
 		const targetTimestamp = Math.floor(Date.parse(`${replayFromDate}T00:00:00Z`) / 1000);
-		const latestBlock = await withBoundedRetry(`${network}:getBlock:${latestHead}`, () => provider.getBlock(latestHead));
+		const latestBlock = await this.#withNetworkRetry(network, `${network}:getBlock:${latestHead}`, () => provider.getBlock(latestHead));
 		if (latestBlock.timestamp <= targetTimestamp) {
 			this.#bootstrapBlocks[network] = latestHead;
 			return latestHead;
@@ -227,7 +274,7 @@ class ContractRunnerForV1_1 {
 		let result = latestHead;
 		while (left <= right) {
 			const middle = Math.floor((left + right) / 2);
-			const block = await withBoundedRetry(`${network}:getBlock:${middle}`, () => provider.getBlock(middle));
+			const block = await this.#withNetworkRetry(network, `${network}:getBlock:${middle}`, () => provider.getBlock(middle));
 			if (block.timestamp >= targetTimestamp) {
 				result = middle;
 				right = middle - 1;

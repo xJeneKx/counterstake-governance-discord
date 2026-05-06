@@ -15,6 +15,41 @@ const DataFetcher = require('./DataFetcher');
 const Formatter = require('./Formatter');
 const Discord = require("./Discord");
 
+const EMPTY_RESULT_CURSOR_LAG_BLOCKS = 1000;
+
+function getEmptyResultCursorBlock(lastBlock, latestBlock) {
+	if (lastBlock === undefined || lastBlock === null || latestBlock === undefined || latestBlock === null)
+		return null;
+	if (!Number.isFinite(Number(lastBlock)) || !Number.isFinite(Number(latestBlock)))
+		return null;
+
+	const safeBlock = Math.max(0, Number(latestBlock) - EMPTY_RESULT_CURSOR_LAG_BLOCKS);
+	if (safeBlock <= Number(lastBlock))
+		return null;
+
+	return safeBlock;
+}
+
+function getContractPollingKey(contract) {
+	return [
+		(contract?.address || '').toLowerCase(),
+		contract?.type || '',
+		contract?.name || '',
+	].join(':');
+}
+
+function dedupeContractsForV1Polling(contracts = []) {
+	const seen = new Set();
+	return contracts.filter((contract) => {
+		const key = getContractPollingKey(contract);
+		if (seen.has(key))
+			return false;
+
+		seen.add(key);
+		return true;
+	});
+}
+
 function getLastFullyProcessedBlock(transactions, processedCount) {
 	if (!processedCount)
 		return null;
@@ -84,7 +119,7 @@ class ContractRunnerForV1 {
 	}
 
 	setContracts(network, contracts) {
-		this.#contracts[network] = contracts;
+		this.#contracts[network] = dedupeContractsForV1Polling(contracts);
 		this.#delayedExec();
 	}
 
@@ -229,6 +264,7 @@ class ContractRunnerForV1 {
 			for (let network in this.#contracts) {
 				const c = this.#contracts[network];
 				if (!c || !c.length) continue;
+				let latestBlockForEmptyResult = null;
 
 				for (let i = 0; i < c.length; i++) {
 					const contract = c[i];
@@ -239,7 +275,24 @@ class ContractRunnerForV1 {
 					const transactions = await this.#getTransactions(network, contract.address, lastBlock);
 					console.log('transactions:', transactions.length);
 
-					if (transactions.length) {
+					if (!transactions.length) {
+						if (latestBlockForEmptyResult === null && this.#providers[network]) {
+							try {
+								latestBlockForEmptyResult = await this.#providers[network].getBlockNumber();
+							} catch (e) {
+								console.error('failed to get latest block for empty v1 result', network, e);
+								latestBlockForEmptyResult = undefined;
+							}
+						}
+
+						const emptyResultCursorBlock = getEmptyResultCursorBlock(lastBlock, latestBlockForEmptyResult);
+						if (emptyResultCursorBlock !== null) {
+							console.log('set last checked block', emptyResultCursorBlock);
+							await Web3_addresses.setLastBlockByAddress(network, contract.address, emptyResultCursorBlock);
+						} else {
+							console.log('number of the last block has not been changed');
+						}
+					} else {
 						let processedCount = 0;
 						for (let j = 0; j < transactions.length; j++) {
 							const transaction = transactions[j];

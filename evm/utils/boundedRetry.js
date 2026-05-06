@@ -42,14 +42,33 @@ function isRetryableNetworkOrRateLimitError(error) {
 	return /rate limit|too many requests|timeout|timed out|socket hang up|connection (?:reset|closed|refused)|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|SERVER_ERROR|NETWORK_ERROR/i.test(text);
 }
 
+function withTimeout(label, operation, timeoutMs) {
+	if (!timeoutMs) {
+		return operation();
+	}
+
+	let timeout;
+	return Promise.race([
+		operation(),
+		new Promise((resolve, reject) => {
+			timeout = setTimeout(() => {
+				const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+				error.code = 'EVM_REQUEST_TIMEOUT';
+				reject(error);
+			}, timeoutMs);
+		}),
+	]).finally(() => clearTimeout(timeout));
+}
+
 async function withBoundedRetry(label, operation, {
 	delaysSeconds = DEFAULT_RETRY_DELAYS_SECONDS,
 	shouldRetry = isRetryableNetworkOrRateLimitError,
+	timeoutMs,
 } = {}) {
 	let lastError;
 	for (let attempt = 0; attempt <= delaysSeconds.length; attempt++) {
 		try {
-			return await operation();
+			return await withTimeout(label, operation, timeoutMs);
 		} catch (error) {
 			lastError = error;
 			if (!shouldRetry(error) || attempt === delaysSeconds.length) {

@@ -26,6 +26,23 @@ async function vote(contract, who, arrValue, votes, total_votes, arrLeader, lead
 	await V1_1EventProcessor.announce(contract, transaction, event);
 }
 
+// (address indexed who, uint[] value)
+async function commit(contract, who, arrValue, transaction) {
+	const { name: contract_name, address, meta } = contract;
+	const log = V1_1EventProcessor.getLog(transaction);
+
+	const event = {
+		aa_address: address,
+		trigger_address: who,
+		trigger_unit: log?.transactionHash,
+		name: contract_name,
+		type: 'commit',
+		value: Formatter.format(contract_name, arrValue.map(v => Number(v)), meta),
+	}
+
+	await V1_1EventProcessor.announce(contract, transaction, event);
+}
+
 // (address indexed who, uint[] value, uint votes)
 async function unvote(contract, provider, who, arrValue, votes, transaction) {
 	const { type, name: contract_name, address, meta } = contract;
@@ -53,5 +70,6 @@ async function unvote(contract, provider, who, arrValue, votes, transaction) {
 
 module.exports = {
 	vote,
+	commit,
 	unvote,
 }

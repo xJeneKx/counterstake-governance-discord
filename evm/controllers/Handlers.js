@@ -17,6 +17,9 @@ function runHandler(label, handler) {
 class Handlers {
 	static addGovernanceHandler(contract, provider) {
 		let c = new ethers.Contract(contract.address, getAbiByType('governance'), provider.provider);
+		c.on('Deposit', (...args) => {
+			runHandler('Deposit', () => governanceHandlers.deposit(contract, ...args));
+		});
 		c.on('Withdrawal', (...args) => {
 			runHandler('Withdrawal', () => governanceHandlers.withdrawal(contract, ...args));
 		});
@@ -29,6 +32,9 @@ class Handlers {
 
 	static addUintHandler(contract, provider) {
 		let c = new ethers.Contract(contract.address, getAbiByType('Uint'), provider.provider);
+		c.on('Commit', (...args) => {
+			runHandler('Uint.Commit', () => uintHandlers.commit(contract, ...args));
+		});
 		c.on('Vote', (...args) => {
 			runHandler('Uint.Vote', () => uintHandlers.vote(contract, ...args));
 		});
@@ -44,6 +50,9 @@ class Handlers {
 
 	static addUintArrayHandler(contract, provider) {
 		let c = new ethers.Contract(contract.address, getAbiByType('UintArray'), provider.provider);
+		c.on('Commit', (...args) => {
+			runHandler('UintArray.Commit', () => uintArrayHandlers.commit(contract, ...args));
+		});
 		c.on('Vote', (...args) => {
 			runHandler('UintArray.Vote', () => uintArrayHandlers.vote(contract, ...args));
 		});
@@ -59,6 +68,9 @@ class Handlers {
 
 	static addAddressHandler(contract, provider) {
 		let c = new ethers.Contract(contract.address, getAbiByType('address'), provider.provider);
+		c.on('Commit', (...args) => {
+			runHandler('address.Commit', () => addressHandlers.commit(contract, ...args));
+		});
 		c.on('Vote', (...args) => {
 			runHandler('address.Vote', () => addressHandlers.vote(contract, ...args));
 		});
