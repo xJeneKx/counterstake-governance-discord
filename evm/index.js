@@ -3,9 +3,10 @@ const { ethers } = require('ethers');
 const Provider = require('./controllers/Provider');
 const Bridges = require('./controllers/Bridges');
 const ContractManager = require('./controllers/ContractManager');
-const ContractRunnerForV1 = require('./controllers/ContractRunnerForV1');
+const AddressEventScanner = require('./controllers/AddressEventScanner');
 
 const { eventsForV1 } = require('./eventsForV1');
+const crashOnError = require('../utils/crashOnError');
 
 function generateMetaForEventsInV1() {
 	for (let type in eventsForV1) {
@@ -33,20 +34,24 @@ function generateMetaForEventsInV1() {
 	}
 }
 
-function initNetwork(network, contractManager, contractManagerOfV1, bridges, enableSubscribeCheck) {
+function initNetwork(network, contractManager, addressEventScanner, bridges, enableSubscribeCheck) {
 	const p = new Provider(network);
-	contractManager.onV1Ready(network, (contracts) => { // v1 only
-		contractManagerOfV1.setContracts(network, contracts);
+	contractManager.onContractsReady(network, (contracts) => {
+		addressEventScanner.setContracts(network, contracts);
 	});
-	p.connect(async () => { // new provider (connect/reconnect)
-		contractManagerOfV1.setProvider(network, p.provider);
-		const contracts = bridges.getContractsByNetwork(network);
-		await contractManager.initNetworkContracts(contracts, network, p.provider);
-		contractManager.initHandlersByNetwork(network, p);
-		if (enableSubscribeCheck) {
-			p.startSubscribeCheck();
-		}
-		console.log(`[${network}]: connected`);
+	p.connect(() => { // new provider (connect/reconnect)
+		(async () => {
+			addressEventScanner.setProvider(network, p.provider);
+			const contracts = bridges.getContractsByNetwork(network);
+			const initialized = await contractManager.initNetworkContracts(contracts, network, p.provider);
+			if (!initialized) return;
+			contractManager.initHandlersByNetwork(network, p);
+			await addressEventScanner.scanNetworkOnce(network);
+			if (enableSubscribeCheck) {
+				p.startSubscribeCheck();
+			}
+			console.log(`[${network}]: connected`);
+		})().catch(e => crashOnError(`[${network}]: connect handler failed`, e));
 	});
 }
 
@@ -56,12 +61,13 @@ async function init() {
 	await bridges.init();
 
 	const contractManager = new ContractManager();
-	const contractManagerOfV1 = new ContractRunnerForV1();
+	const addressEventScanner = new AddressEventScanner();
+	addressEventScanner.startInterval();
 
-	initNetwork('Ethereum', contractManager, contractManagerOfV1, bridges);
-	initNetwork('BSC', contractManager, contractManagerOfV1, bridges);
-	initNetwork('Polygon', contractManager, contractManagerOfV1, bridges);
-	initNetwork('Kava', contractManager, contractManagerOfV1, bridges, true);
+	initNetwork('Ethereum', contractManager, addressEventScanner, bridges);
+	initNetwork('BSC', contractManager, addressEventScanner, bridges);
+	initNetwork('Polygon', contractManager, addressEventScanner, bridges);
+	initNetwork('Kava', contractManager, addressEventScanner, bridges, true);
 }
 
 module.exports = {

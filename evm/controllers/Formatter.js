@@ -3,7 +3,7 @@ const { ethers } = require('ethers');
 class Formatter {
 	static format(name, value, meta) {
 		if (name === 'min_price20') {
-			return ethers.utils.formatUnits(BigNumber.from(value), 20);
+			return ethers.formatUnits(value, 20);
 		}
 
 		if (["ratio100", "counterstake_coef100"].includes(name)) {

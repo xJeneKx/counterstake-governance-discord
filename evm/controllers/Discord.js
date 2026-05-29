@@ -11,7 +11,7 @@ class Discord {
 		event.trigger_address = ethers.getAddress(event.trigger_address);
 
 		const aa_name = meta.main_aa + ' - ' + meta.symbol + ' on ' + meta.network + ' (' + (meta.isImport ? 'import' : 'export') + ')';
-		governanceDiscord.announceEvent(
+		return governanceDiscord.announceEvent(
 			aa_name,
 			meta.symbol,
 			meta.decimals,

@@ -31,10 +31,7 @@ exports.ws_nodes = {
 	Kava: process.env.ws_nodes_Kava,
 }
 
-exports.scan_api_keys = {
-	Ethereum: process.env.eth_scan_api_key,
-	BSC: process.env.bsc_scan_api_key,
-	Polygon: process.env.polygon_scan_api_key,
-};
+exports.scan_start_date = process.env.scan_start_date;
+exports.address_scan_interval_hours = process.env.address_scan_interval_hours || 12;
 
 console.log('finished server conf');

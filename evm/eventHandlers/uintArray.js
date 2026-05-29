@@ -3,7 +3,7 @@ const { ethers } = require("ethers");
 const { getAbiByType } = require("../abi/getAbiByType");
 const DataFetcher = require("../controllers/DataFetcher");
 const Formatter = require("../controllers/Formatter");
-const Discord = require("../controllers/Discord");
+const EventPublisher = require("../controllers/EventPublisher");
 
 // (address indexed who, uint[] value, uint votes, uint total_votes, uint[] leader, uint leader_total_votes, uint expiry_ts)
 function vote(contract, who, arrValue, votes, total_votes, arrLeader, leader_total_votes, expiry_ts, transaction) {
@@ -13,6 +13,7 @@ function vote(contract, who, arrValue, votes, total_votes, arrLeader, leader_tot
 		aa_address: address,
 		trigger_address: who,
 		trigger_unit: transaction.transactionHash,
+		timestamp: Math.floor(Date.now() / 1000),
 		added_support: votes.toString(),
 		name: contract_name,
 		type: 'added_support',
@@ -23,7 +24,7 @@ function vote(contract, who, arrValue, votes, total_votes, arrLeader, leader_tot
 	}
 
 	console.log('event v2:', event);
-	Discord.announceEvent(meta, event);
+	return EventPublisher.publish(meta, event, 'realtime');
 }
 
 // (address indexed who, uint[] value, uint votes)
@@ -40,6 +41,7 @@ async function unvote(contract, provider, who, arrValue, votes, transaction) {
 		aa_address: address,
 		trigger_address: who,
 		trigger_unit: transaction.transactionHash,
+		timestamp: Math.floor(Date.now() / 1000),
 		name: contract_name,
 		type: 'removed_support',
 		leader_support: leader_support.toString(),
@@ -47,7 +49,7 @@ async function unvote(contract, provider, who, arrValue, votes, transaction) {
 	}
 
 	console.log('event v2:', event);
-	Discord.announceEvent(meta, event);
+	await EventPublisher.publish(meta, event, 'realtime');
 }
 
 

@@ -3,18 +3,17 @@ const { ethers } = require("ethers");
 const Handlers = require('./Handlers');
 const { getAbiByType } = require('../abi/getAbiByType');
 
+const SUPPORTED_AA_VERSIONS = ['v1', 'v1.1', 'v1.2'];
+const REALTIME_AA_VERSIONS = ['v1.1', 'v1.2'];
 
 function wait(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 class ContractManager {
-	#contracts = {
-		v1: {},
-		'v1.1': {}
-	};
+	#contracts = Object.fromEntries(SUPPORTED_AA_VERSIONS.map(version => [version, {}]));
 	#initializedNetworks = {};
-	#readyHandlers = {};
+	#contractsReadyHandlers = {};
 	#handlers = {
 		governance: Handlers.addGovernanceHandler,
 		Uint: Handlers.addUintHandler,
@@ -24,8 +23,9 @@ class ContractManager {
 
 	async initNetworkContracts(contracts, network, provider) {
 		if (this.#initializedNetworks[network]) {
-			return;
+			return true;
 		}
+		this.#resetNetworkContracts(network);
 
 		try {
 			for (let index in contracts) {
@@ -42,7 +42,7 @@ class ContractManager {
 			) {
 				console.error('Error initializing contracts:', e.message, '. try reconnect');
 				provider.close();
-				return;
+				return false;
 			}
 			
 			throw e;
@@ -51,30 +51,36 @@ class ContractManager {
 		console.log('initNetworkContracts:', network, 'done');
 		this.#initializedNetworks[network] = true;
 
-		if (this.#readyHandlers[network]) {
-			this.#readyHandlers[network](this.#contracts.v1[network]);
+		if (this.#contractsReadyHandlers[network]) {
+			this.#contractsReadyHandlers[network](
+				SUPPORTED_AA_VERSIONS.flatMap(version => this.#contracts[version][network] || [])
+			);
 		}
+		return true;
 	}
 
 	initHandlersByNetwork(network, provider) {
-		if (!this.#contracts['v1.1'][network]) {
-			return;
-		}
-
-		this.#contracts['v1.1'][network].forEach(contract => {
+		REALTIME_AA_VERSIONS.flatMap(version => this.#contracts[version][network] || []).forEach(contract => {
 			if (this.#handlers[contract.type]) {
 				this.#handlers[contract.type](contract, provider);
 			}
 		});
 	}
 
-	onV1Ready(network, handler) {
-		this.#readyHandlers[network] = handler;
+	onContractsReady(network, handler) {
+		this.#contractsReadyHandlers[network] = handler;
+	}
+
+	#resetNetworkContracts(network) {
+		for (const version of SUPPORTED_AA_VERSIONS) {
+			delete this.#contracts[version][network];
+		}
 	}
 
 	#addContract(meta, address, type, name) {
-		if (!this.#contracts[meta.aa_version][meta.network]) {
-			this.#contracts[meta.aa_version][meta.network] = [];
+		const versionContracts = this.#contracts[meta.aa_version];
+		if (!versionContracts[meta.network]) {
+			versionContracts[meta.network] = [];
 		}
 		
 		console.log('added contract: ', {
@@ -85,7 +91,7 @@ class ContractManager {
 			name,
 		});
 
-		this.#contracts[meta.aa_version][meta.network].push({
+		versionContracts[meta.network].push({
 			address,
 			type,
 			name,
@@ -95,6 +101,9 @@ class ContractManager {
 
 	async #setContracts(contract, network, provider) {
 		const { type, aa, aa_version, symbol, decimals } = contract;
+		if (!SUPPORTED_AA_VERSIONS.includes(aa_version)) {
+			throw Error(`unsupported EVM aa_version ${aa_version} for ${network} ${aa}`);
+		}
 
 		const isImport = type === 'import';
 		const meta = { aa_version, network, symbol, decimals, isImport, main_aa: aa };
