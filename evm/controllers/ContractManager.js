@@ -72,6 +72,7 @@ class ContractManager {
 	}
 
 	#resetNetworkContracts(network) {
+		delete this.#initializedNetworks[network];
 		for (const version of SUPPORTED_AA_VERSIONS) {
 			delete this.#contracts[version][network];
 		}

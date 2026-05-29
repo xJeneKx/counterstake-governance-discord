@@ -59,7 +59,7 @@ class Provider {
 	}
 	
 	close() {
-		if (this._provider.destroyed) return;
+		if (!this._provider || this._provider.destroyed) return;
 		this._provider.websocket.removeAllListeners();
 		this._provider.destroy();
 	}

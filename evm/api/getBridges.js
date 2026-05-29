@@ -8,7 +8,7 @@ async function getBridges(r = 0) {
 		return bridges.data.data;
 	} catch (e) {
 		console.log('getBridges error:', e);
-		if (r < 5 && e.response.status === 504) {
+		if (r < 5 && e.response?.status === 504) {
 			await sleep(10);
 			return getBridges(++r);
 		}
