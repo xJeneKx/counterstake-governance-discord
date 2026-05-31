@@ -6,9 +6,15 @@ const EventPublisher = require('./EventPublisher');
 const { getTargetAddressScanCalls } = require('../api/getAddressScanCalls');
 const crashOnError = require('../../utils/crashOnError');
 const { watchForDeadlock } = require('../../utils/deadlockMonitor');
+const { ethers } = require('ethers');
+const { getAbiByType } = require('../abi/getAbiByType');
+const DataFetcher = require('./DataFetcher');
+const Formatter = require('./Formatter');
+const { parseVoteLogFromReceipt } = require('./VoteReceiptParser');
 
 const EMPTY_SCAN_LAG_BLOCKS = 1000;
 const SCAN_LOCK = 'AddressEventScanner.scanAllNetworks';
+const RECEIPT_EVENT_AA_VERSIONS = ['v1.1', 'v1.2'];
 
 watchForDeadlock(SCAN_LOCK);
 
@@ -150,36 +156,42 @@ class AddressEventScanner {
 		}
 
 		if (name === 'voteAndDeposit' || name === 'vote') {
-			const { ethers } = require('ethers');
-			const { getAbiByType } = require('../abi/getAbiByType');
-			const DataFetcher = require('./DataFetcher');
-			const Formatter = require('./Formatter');
-			const governance = new ethers.Contract(meta.governance_address, getAbiByType('governance'), this.#providers[network]);
-			const balance = await governance.balances(from_address);
-
-			const c = new ethers.Contract(address, getAbiByType(type), this.#providers[network]);
-			const {
-				leader_value,
-				leader_support,
-				support,
-				value,
-			} = type === 'UintArray' ? await DataFetcher.fetchVotedArrayData(c, data) : await DataFetcher.fetchVotedData(c, data);
-
 			event.type = 'added_support';
-			event.added_support = balance.toString();
-			event.leader_support = leader_support.toString();
-			event.leader_value = Formatter.format(contractName, leader_value, meta);
-			event.value = Formatter.format(contractName, value, meta);
-			event.support = support.toString();
+			if (RECEIPT_EVENT_AA_VERSIONS.includes(meta.aa_version)) {
+				const receipt = await this.#providers[network].getTransactionReceipt(hash);
+				const voteLog = parseVoteLogFromReceipt(receipt, contract, { who: from_address, value: data.value });
+				if (!voteLog) {
+					console.log('vote event log not found', meta.network, hash);
+					return 'err';
+				}
+				event.added_support = voteLog.votes.toString();
+				event.leader_support = voteLog.leader_total_votes.toString();
+				event.leader_value = Formatter.format(contractName, voteLog.leader, meta);
+				event.value = Formatter.format(contractName, voteLog.value, meta);
+				event.support = voteLog.total_votes.toString();
+			} else {
+				const governance = new ethers.Contract(meta.governance_address, getAbiByType('governance'), this.#providers[network]);
+				const balance = await governance.balances(from_address);
+
+				const c = new ethers.Contract(address, getAbiByType(type), this.#providers[network]);
+				const {
+					leader_value,
+					leader_support,
+					support,
+					value,
+				} = type === 'UintArray' ? await DataFetcher.fetchVotedArrayData(c, data) : await DataFetcher.fetchVotedData(c, data);
+
+				event.added_support = balance.toString();
+				event.leader_support = leader_support.toString();
+				event.leader_value = Formatter.format(contractName, leader_value, meta);
+				event.value = Formatter.format(contractName, value, meta);
+				event.support = support.toString();
+			}
 
 			return event;
 		}
 
 		if (name === 'unvote') {
-			const { ethers } = require('ethers');
-			const { getAbiByType } = require('../abi/getAbiByType');
-			const DataFetcher = require('./DataFetcher');
-			const Formatter = require('./Formatter');
 			const c = new ethers.Contract(address, getAbiByType(type), this.#providers[network]);
 			const {
 				leader_value,

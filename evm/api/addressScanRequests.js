@@ -135,10 +135,7 @@ function createKavaBlockLoader(provider) {
 	const blockPromises = new Map();
 	return (blockNumber) => {
 		if (!blockPromises.has(blockNumber)) {
-			blockPromises.set(blockNumber, provider.getBlock(blockNumber, true).catch(e => {
-				console.log('failed to load Kava block metadata', blockNumber, e && e.message ? e.message : e);
-				return null;
-			}));
+			blockPromises.set(blockNumber, provider.getBlock(blockNumber, true));
 		}
 		return blockPromises.get(blockNumber);
 	};

@@ -12,7 +12,7 @@ async function getBridges(r = 0) {
 			await sleep(10);
 			return getBridges(++r);
 		}
-		return [];
+		throw e;
 	}
 }
 

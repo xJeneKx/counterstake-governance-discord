@@ -1,5 +1,23 @@
 const { ethers } = require("ethers");
 
+const ARRAY_OUT_OF_BOUNDS_PANIC_CODE = 0x32n;
+
+function isArrayOutOfBoundsError(error, index) {
+	const panicCode = error?.revert?.args?.[0];
+	if (error?.revert?.name === 'Panic'
+		&& panicCode !== undefined
+		&& BigInt(panicCode) === ARRAY_OUT_OF_BOUNDS_PANIC_CODE) {
+		return true;
+	}
+	return index > 0
+		&& error?.code === 'CALL_EXCEPTION'
+		&& error?.action === 'call'
+		&& error?.data === '0x'
+		&& error?.reason === 'require(false)'
+		&& error?.invocation?.method === 'leader'
+		&& error?.invocation?.signature === 'leader(uint256)';
+}
+
 class DataFetcher {
 	static async fetchVotedData(contract, data) {
 		const leader_value = await contract.leader();
@@ -24,6 +42,9 @@ class DataFetcher {
 			try {
 				leader_value.push(await contract.leader(i));
 			} catch (e) {
+				if (!isArrayOutOfBoundsError(e, i)) {
+					throw e;
+				}
 				break;
 			}
 		}

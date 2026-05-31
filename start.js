@@ -8,6 +8,7 @@ const governanceEvents = require('governance_events/governance_events.js');
 const governanceDiscord = require('governance_events/governance_discord.js');
 const migration = require('./migration');
 const evm = require('./evm');
+const { isAfterScanStartDate } = require('./utils/scanStartDateFilter');
 
 var assocGovernanceAAs = {};
 var assocCounterstakeAAs = {};
@@ -36,13 +37,13 @@ async function start(){
 eventBus.on('aa_response', async function(objResponse){
 	if(objResponse.response.error)
 		return console.log('ignored response with error: ' + objResponse.response.error);
-	if ((Math.ceil(Date.now() / 1000) - objResponse.timestamp) / 60 / 60 > 24)
-		return console.log('ignored old response' + objResponse);
 	if (assocGovernanceAAs[objResponse.aa_address]){
 		const governance_aa = assocGovernanceAAs[objResponse.aa_address];
 		const main_aa = assocCounterstakeAAs[governance_aa.main_aa];
 
 		const event = await governanceEvents.treatResponseFromGovernanceAA(objResponse, main_aa.asset);
+		if (!isAfterScanStartDate(event.timestamp, conf.scan_start_date))
+			return;
 
 		const aa_name = main_aa.aa_address + ' - ' + main_aa.symbol + ' on Obyte (' + (governance_aa.is_import ? 'import' : 'export') + ')';
 		governanceDiscord.announceEvent(aa_name, main_aa.symbol, main_aa.decimals, conf.counterstake_base_url + main_aa.aa_address, event);

@@ -34,7 +34,7 @@ function generateMetaForEventsInV1() {
 	}
 }
 
-function initNetwork(network, contractManager, addressEventScanner, bridges, enableSubscribeCheck) {
+function initNetwork(network, contractManager, addressEventScanner, bridges) {
 	const p = new Provider(network);
 	contractManager.onContractsReady(network, (contracts) => {
 		addressEventScanner.setContracts(network, contracts);
@@ -47,9 +47,6 @@ function initNetwork(network, contractManager, addressEventScanner, bridges, ena
 			if (!initialized) return;
 			contractManager.initHandlersByNetwork(network, p);
 			await addressEventScanner.scanNetworkOnce(network);
-			if (enableSubscribeCheck) {
-				p.startSubscribeCheck();
-			}
 			console.log(`[${network}]: connected`);
 		})().catch(e => crashOnError(`[${network}]: connect handler failed`, e));
 	});
@@ -67,7 +64,7 @@ async function init() {
 	initNetwork('Ethereum', contractManager, addressEventScanner, bridges);
 	initNetwork('BSC', contractManager, addressEventScanner, bridges);
 	initNetwork('Polygon', contractManager, addressEventScanner, bridges);
-	initNetwork('Kava', contractManager, addressEventScanner, bridges, true);
+	initNetwork('Kava', contractManager, addressEventScanner, bridges);
 }
 
 module.exports = {
