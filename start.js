@@ -21,17 +21,22 @@ eventBus.once('connected', function(ws){
 
 async function start(){
 	await discoverGovernanceAas();
-	eventBus.on('connected', function(ws){
-		conf.governance_export_base_AAs
-		.concat(conf.governance_import_base_AAs)
-		.forEach((address) => {
-			network.addLightWatchedAa(address, null, console.log);
-		});
+	watchBaseGovernanceAas();
+	eventBus.on('connected', function(){
+		watchBaseGovernanceAas();
 	});
 	lightWallet.refreshLightClientHistory();
 	setInterval(discoverGovernanceAas, 24*3600*1000); // everyday check
 	await migration.init()
 	await evm.init();
+}
+
+function watchBaseGovernanceAas() {
+	conf.governance_export_base_AAs
+	.concat(conf.governance_import_base_AAs)
+	.forEach((address) => {
+		network.addLightWatchedAa(address, null, console.log);
+	});
 }
 
 eventBus.on('aa_response', async function(objResponse){
@@ -56,18 +61,16 @@ async function discoverGovernanceAas(){
 }
 
 async function indexAndWatchGovernanceAA(governanceAA){
-	return new Promise(async function(resolve){
-		const isImport = conf.governance_import_base_AAs.includes(governanceAA.definition[1].base_aa);
-		const mainAAAddress = governanceAA.definition[1].params[isImport ? 'import_aa' : 'export_aa'];
+	const isImport = conf.governance_import_base_AAs.includes(governanceAA.definition[1].base_aa);
+	const mainAAAddress = governanceAA.definition[1].params[isImport ? 'import_aa' : 'export_aa'];
 
-		await indexAllCounterstakeAaParams(mainAAAddress, isImport);
-		assocGovernanceAAs[governanceAA.address] = {
-			main_aa: mainAAAddress,
-			is_import: isImport
-		}
+	await indexAllCounterstakeAaParams(mainAAAddress, isImport);
+	assocGovernanceAAs[governanceAA.address] = {
+		main_aa: mainAAAddress,
+		is_import: isImport
+	}
 
-		walletGeneral.addWatchedAddress(governanceAA.address, resolve);
-	});
+	await new Promise(resolve => walletGeneral.addWatchedAddress(governanceAA.address, resolve));
 }
 
 async function indexAllCounterstakeAaParams(mainAAAddress, isImport){

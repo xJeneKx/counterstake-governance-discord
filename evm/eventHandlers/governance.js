@@ -1,4 +1,5 @@
 const EventPublisher = require("../controllers/EventPublisher");
+const { getTransactionHash } = require("./eventPayload");
 
 // Withdrawal(address indexed who, uint amount)
 function withdrawal(contract, who, amount, transaction) {
@@ -7,7 +8,7 @@ function withdrawal(contract, who, amount, transaction) {
 	let event = {
 		aa_address: address,
 		trigger_address: who,
-		trigger_unit: transaction.transactionHash,
+		trigger_unit: getTransactionHash(transaction),
 		timestamp: Math.floor(Date.now() / 1000),
 		name: contract_name,
 		type: 'withdraw',

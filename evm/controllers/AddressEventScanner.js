@@ -15,8 +15,56 @@ const { parseVoteLogFromReceipt } = require('./VoteReceiptParser');
 const EMPTY_SCAN_LAG_BLOCKS = 1000;
 const SCAN_LOCK = 'AddressEventScanner.scanAllNetworks';
 const RECEIPT_EVENT_AA_VERSIONS = ['v1.1', 'v1.2'];
+const GOVERNANCE_LOG_BY_EVENT_TYPE = {
+	deposit: 'Deposit',
+	withdraw: 'Withdrawal',
+};
 
 watchForDeadlock(SCAN_LOCK);
+
+function sameAddress(a, b) {
+	return !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
+}
+
+function getDecodedAmount(data) {
+	if (!data) return null;
+	if (data.amount !== undefined) return data.amount;
+	if (data.length) return data[data.length - 1];
+	return null;
+}
+
+function getFirstInternalAmount(call) {
+	const internal = Array.isArray(call.internal_transactions)
+		? call.internal_transactions.find(row => row && row.value !== undefined && row.value !== null)
+		: null;
+	return internal ? internal.value : null;
+}
+
+function getDecodedFrom(data) {
+	if (!data) return null;
+	return data.from || data[0] || null;
+}
+
+function parseGovernanceAmountFromReceipt(receipt, contract, eventType, expectedWho) {
+	if (!receipt || !Array.isArray(receipt.logs)) return null;
+	const eventName = GOVERNANCE_LOG_BY_EVENT_TYPE[eventType];
+	if (!eventName) return null;
+	const iface = new ethers.Interface(getAbiByType('governance'));
+	const contractAddress = String(contract.address).toLowerCase();
+	for (const log of receipt.logs) {
+		if (!log.address || String(log.address).toLowerCase() !== contractAddress) continue;
+		let parsed;
+		try {
+			parsed = iface.parseLog(log);
+		} catch (e) {
+			continue;
+		}
+		if (parsed?.name !== eventName) continue;
+		if (expectedWho && !sameAddress(parsed.args.who, expectedWho)) continue;
+		return parsed.args.amount;
+	}
+	return null;
+}
 
 function getValidScanStartDate(value) {
 	const date = new Date(value);
@@ -134,24 +182,41 @@ class AddressEventScanner {
 		}
 
 		if (name.startsWith('deposit')) {
-			const internal = call.internal_transactions[0];
-			if (!internal) {
-				console.log('internal transaction not found(deposit)', meta.network, hash);
-				return 'err';
+			const decodedFrom = getDecodedFrom(data);
+			const decodedAmount = getDecodedAmount(data);
+			if (name.includes('address') && decodedFrom) {
+				event.trigger_address = decodedFrom;
 			}
 			event.type = 'deposit';
-			event.amount = internal.value.toString();
+			event.amount = decodedAmount?.toString();
+			if (!event.amount && RECEIPT_EVENT_AA_VERSIONS.includes(meta.aa_version)) {
+				const receipt = await this.#providers[network].getTransactionReceipt(hash);
+				const receiptAmount = parseGovernanceAmountFromReceipt(receipt, contract, event.type, event.trigger_address);
+				event.amount = receiptAmount?.toString();
+			}
+			if (!event.amount) {
+				console.log('deposit amount not found', meta.network, hash);
+				return 'err';
+			}
 			return event;
 		}
 
 		if (name.startsWith('withdraw')) {
-			const internal = call.internal_transactions[0];
-			if (!internal) {
-				console.log('internal transaction not found(withdraw)', meta.network, hash);
+			const decodedAmount = getDecodedAmount(data);
+			const legacyInternalAmount = meta.aa_version === 'v1' && name === 'withdraw()'
+				? getFirstInternalAmount(call)
+				: null;
+			event.type = 'withdraw';
+			event.amount = (decodedAmount ?? legacyInternalAmount)?.toString();
+			if (!event.amount && RECEIPT_EVENT_AA_VERSIONS.includes(meta.aa_version)) {
+				const receipt = await this.#providers[network].getTransactionReceipt(hash);
+				const receiptAmount = parseGovernanceAmountFromReceipt(receipt, contract, event.type, event.trigger_address);
+				event.amount = receiptAmount?.toString();
+			}
+			if (!event.amount) {
+				console.log('withdraw amount not found', meta.network, hash);
 				return 'err';
 			}
-			event.type = 'withdraw';
-			event.amount = internal.value.toString();
 			return event;
 		}
 

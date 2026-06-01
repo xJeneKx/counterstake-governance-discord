@@ -4,6 +4,7 @@ const { getAbiByType } = require("../abi/getAbiByType");
 const DataFetcher = require("../controllers/DataFetcher");
 const Formatter = require("../controllers/Formatter");
 const EventPublisher = require("../controllers/EventPublisher");
+const { getTransactionHash } = require('./eventPayload');
 
 // (address indexed who, uint[] value, uint votes, uint total_votes, uint[] leader, uint leader_total_votes, uint expiry_ts)
 function vote(contract, who, arrValue, votes, total_votes, arrLeader, leader_total_votes, expiry_ts, transaction) {
@@ -12,7 +13,7 @@ function vote(contract, who, arrValue, votes, total_votes, arrLeader, leader_tot
 	const event = {
 		aa_address: address,
 		trigger_address: who,
-		trigger_unit: transaction.transactionHash,
+		trigger_unit: getTransactionHash(transaction),
 		timestamp: Math.floor(Date.now() / 1000),
 		added_support: votes.toString(),
 		name: contract_name,
@@ -40,7 +41,7 @@ async function unvote(contract, provider, who, arrValue, votes, transaction) {
 	const event = {
 		aa_address: address,
 		trigger_address: who,
-		trigger_unit: transaction.transactionHash,
+		trigger_unit: getTransactionHash(transaction),
 		timestamp: Math.floor(Date.now() / 1000),
 		name: contract_name,
 		type: 'removed_support',

@@ -18,13 +18,10 @@ function generateMetaForEventsInV1() {
 		t.events = t.events.map(v => {
 			try {
 				const functionFragment = t.iface.getFunction(v.name);
-				if (functionFragment) {
-					v.sighash = functionFragment.selector;
-				} else {
-					console.error(`Function ${v.name} not found in interface, calculating selector manually`);
-					const signature = `${v.name}()`;
-					v.sighash = ethers.id(signature).substring(0, 10);
+				if (!functionFragment) {
+					throw new Error(`Function ${v.name} not found in interface`);
 				}
+				v.sighash = functionFragment.selector;
 			} catch (e) {
 				console.error(e);
 				throw `Error getting selector for ${v.name}`;

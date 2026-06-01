@@ -41,7 +41,7 @@ class ContractManager {
 				)
 			) {
 				console.error('Error initializing contracts:', e.message, '. try reconnect');
-				provider.close();
+				await provider.destroy();
 				return false;
 			}
 			
@@ -141,7 +141,7 @@ class ContractManager {
 
 		if (isImport) {
 			const oracleAddress = await governance.votedValuesMap('oracleAddress');
-			this.#addContract(meta, oracleAddress, 'address', 'address');
+			this.#addContract(meta, oracleAddress, 'address', 'oracleAddress');
 
 			const min_price20 = await governance.votedValuesMap('min_price20');
 			this.#addContract(meta, min_price20, 'Uint', 'min_price20');

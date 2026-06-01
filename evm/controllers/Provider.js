@@ -14,6 +14,8 @@ class Provider {
 	#connectCB;
 	#heartbeatInterval = null;
 	#pongTimeout = null;
+	#reconnecting = false;
+	#reconnectSourceProvider = null;
 	
 	_provider = null;
 	events = new EventEmitter();
@@ -55,39 +57,61 @@ class Provider {
 	
 	async #createProvider() {
 		console.log(`[Provider[${this.#network}].ws] create provider`);
-		this._provider = new ethers.WebSocketProvider(this.#url);
+		const provider = new ethers.WebSocketProvider(this.#url);
+		this._provider = provider;
 		
-		this._provider.websocket.on('open', () => {
-			this.#onOpen()
+		provider.websocket.on('open', () => {
+			this.#onOpen(provider);
 		});
-		this._provider.websocket.on('close', (code) => {
-			this.#onClose(code);
+		provider.websocket.on('close', (code) => {
+			this.#onClose(provider, code);
 		});
-		this._provider.websocket.on('error', (error) => {
-			this.#onError(error);
+		provider.websocket.on('error', (error) => {
+			this.#onError(provider, error);
 		});
-		this._provider.websocket.on('pong', () => {
-			this.#onPong();
+		provider.websocket.on('pong', () => {
+			this.#onPong(provider);
 		});
 	}
 
-	#onOpen() {
+	#isCurrentProvider(provider) {
+		return provider && provider === this._provider;
+	}
+
+	#onOpen(provider) {
+		if (!this.#isCurrentProvider(provider)) return;
+		this.#reconnecting = false;
+		this.#reconnectSourceProvider = null;
 		this.#startHeartbeat();
 		this.#connectCB();
 	}
 
-	#onError(error) {
+	#onError(provider, error) {
+		if (!this.#isCurrentProvider(provider)) return;
 		console.error(`[Provider[${this.#network}].ws_error]:`, error);
-		this.#stopHeartbeat();
-		this.close();
+		this.#reconnect(provider, 'error');
 	}
 
-	async #onClose(code) {
+	async #onClose(provider, code) {
+		if (!this.#isCurrentProvider(provider)) return;
+		this.#reconnect(provider, `close ${code}`);
+	}
+
+	async #reconnect(provider, reason) {
+		if (!this.#isCurrentProvider(provider)) return;
+		if (this.#reconnecting && provider === this.#reconnectSourceProvider) return;
+		this.#reconnecting = true;
+		this.#reconnectSourceProvider = provider;
 		this.#stopHeartbeat();
-		console.error(`[Provider[${this.#network}].ws_close]:`, code);
+		console.error(`[Provider[${this.#network}].ws_reconnect]:`, reason);
 		this.events.emit('close');
+		if (!provider.destroyed) {
+			provider.destroy();
+		}
 		await sleep(2);
-		this.connect();
+		if (this.#isCurrentProvider(provider)) {
+			this.connect();
+		}
 	}
 
 	#startHeartbeat() {
@@ -120,7 +144,8 @@ class Provider {
 		websocket.ping();
 	}
 
-	#onPong() {
+	#onPong(provider) {
+		if (!this.#isCurrentProvider(provider)) return;
 		clearTimeout(this.#pongTimeout);
 		this.#pongTimeout = null;
 	}
