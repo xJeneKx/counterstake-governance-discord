@@ -346,6 +346,11 @@ class AddressEventScanner {
 			const safeCursorBlock = Math.min(cursorBlock, firstUnsafeBlock - 1);
 			if (safeCursorBlock > 0) {
 				await Web3AddressCursors.setLastBlock(network, contract.address, safeCursorBlock + 1);
+				return;
+			}
+			const currentBlock = Number(currentCursor || 0);
+			if (firstUnsafeBlock > currentBlock) {
+				await Web3AddressCursors.setLastBlock(network, contract.address, firstUnsafeBlock);
 			}
 			return;
 		}

@@ -6,9 +6,19 @@ const {
 	getLinkToExplorerByTX
 } = require("../../utils/getLinkToExplorer");
 
+function normalizeTriggerAddress(event) {
+	if (event.trigger_address === null || event.trigger_address === undefined)
+		return;
+	try {
+		event.trigger_address = ethers.getAddress(event.trigger_address);
+	} catch (e) {
+		console.log('invalid EVM trigger address, keeping original value', event.trigger_address);
+	}
+}
+
 class Discord {
 	static announceEvent(meta, event) {
-		event.trigger_address = ethers.getAddress(event.trigger_address);
+		normalizeTriggerAddress(event);
 
 		const aa_name = meta.main_aa + ' - ' + meta.symbol + ' on ' + meta.network + ' (' + (meta.isImport ? 'import' : 'export') + ')';
 		return governanceDiscord.announceEvent(
