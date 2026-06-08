@@ -45,6 +45,22 @@ function getDecodedFrom(data) {
 	return data.from || data[0] || null;
 }
 
+function getBlockCallOptions(call) {
+	const blockTag = Number(call.block_number);
+	return Number.isFinite(blockTag) && blockTag >= 0 ? { blockTag } : undefined;
+}
+
+function isHistoricalStateUnavailableError(error) {
+	const message = [
+		error?.message,
+		error?.shortMessage,
+		error?.info?.error?.message,
+		error?.error?.message,
+	].filter(Boolean).join(' ').toLowerCase();
+	return message.includes('historical state')
+		|| message.includes('missing trie node');
+}
+
 function parseGovernanceAmountFromReceipt(receipt, contract, eventType, expectedWho) {
 	if (!receipt || !Array.isArray(receipt.logs)) return null;
 	const eventName = GOVERNANCE_LOG_BY_EVENT_TYPE[eventType];
@@ -235,22 +251,35 @@ class AddressEventScanner {
 				event.value = Formatter.format(contractName, voteLog.value, meta);
 				event.support = voteLog.total_votes.toString();
 			} else {
+				const callOptions = getBlockCallOptions(call);
 				const governance = new ethers.Contract(meta.governance_address, getAbiByType('governance'), this.#providers[network]);
-				const balance = await governance.balances(from_address);
-
 				const c = new ethers.Contract(address, getAbiByType(type), this.#providers[network]);
-				const {
-					leader_value,
-					leader_support,
-					support,
-					value,
-				} = type === 'UintArray' ? await DataFetcher.fetchVotedArrayData(c, data) : await DataFetcher.fetchVotedData(c, data);
+				const getState = async (options) => {
+					const balance = options
+						? await governance.balances(from_address, options)
+						: await governance.balances(from_address);
 
-				event.added_support = balance.toString();
-				event.leader_support = leader_support.toString();
-				event.leader_value = Formatter.format(contractName, leader_value, meta);
-				event.value = Formatter.format(contractName, value, meta);
-				event.support = support.toString();
+					const votedData = type === 'UintArray'
+						? await DataFetcher.fetchVotedArrayData(c, data, options)
+						: await DataFetcher.fetchVotedData(c, data, options);
+					return { balance, ...votedData };
+				};
+				let state;
+				try {
+					state = await getState(callOptions);
+				} catch (e) {
+					if (!callOptions || !isHistoricalStateUnavailableError(e)) {
+						throw e;
+					}
+					console.warn('historical EVM state unavailable, falling back to latest state', meta.network, hash, callOptions.blockTag);
+					state = await getState();
+				}
+
+				event.added_support = state.balance.toString();
+				event.leader_support = state.leader_support.toString();
+				event.leader_value = Formatter.format(contractName, state.leader_value, meta);
+				event.value = Formatter.format(contractName, state.value, meta);
+				event.support = state.support.toString();
 			}
 
 			return event;
