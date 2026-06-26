@@ -15,10 +15,12 @@ exports.explorer_base_url = process.env.testnet ? 'https://testnetexplorer.obyte
 exports.counterstake_base_url = process.env.testnet ? 'https://testnet-bridge.counterstake.org/governance/' : 'https://counterstake.org/governance/';
 
 exports.governance_export_base_AAs = [
-	'HLNWXGGHGXWMZN27W2722MNJCHH2IVAO'
+	'HLNWXGGHGXWMZN27W2722MNJCHH2IVAO',
+	'IUUYZBNVT7ZRF5BM6HO2C464KT6534DV',
 ];
 exports.governance_import_base_AAs = [
-	'KDHCTQOTKTO6MLYOCU6OCBI7KK72DV3P'
+	'KDHCTQOTKTO6MLYOCU6OCBI7KK72DV3P',
+	'RUUL66HRJ56W3GLHTFEKESF57L74WSM7',
 ];
 exports.token_registry_AA_address = "O6H6ZIFI57X3PLTYHOCVYPP5A553CYFQ";
 
