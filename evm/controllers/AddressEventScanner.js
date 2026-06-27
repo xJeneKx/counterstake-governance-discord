@@ -3,27 +3,29 @@ const conf = require('ocore/conf');
 const mutex = require('ocore/mutex');
 const Web3AddressCursors = require('../../db/Web3AddressCursors');
 const EventPublisher = require('./EventPublisher');
-const { getTargetAddressScanCalls } = require('../api/getAddressScanCalls');
+const {
+	getEventLogScanEventsByContract,
+	isEventLogScanSupported,
+} = require('../api/eventLogScanEvents');
+const {
+	getSqdTargetCallsByContract,
+	isSqdScanSupported,
+} = require('../api/sqdScanCalls');
+const {
+	getSqdLogScanEventsByContract,
+	isSqdLogScanSupported,
+} = require('../api/sqdLogScanEvents');
 const crashOnError = require('../../utils/crashOnError');
-const { watchForDeadlock } = require('../../utils/deadlockMonitor');
 const { ethers } = require('ethers');
 const { getAbiByType } = require('../abi/getAbiByType');
 const DataFetcher = require('./DataFetcher');
 const Formatter = require('./Formatter');
-const { parseVoteLogFromReceipt } = require('./VoteReceiptParser');
 
 const EMPTY_SCAN_LAG_BLOCKS = 1000;
-const SCAN_LOCK = 'AddressEventScanner.scanAllNetworks';
-const RECEIPT_EVENT_AA_VERSIONS = ['v1.1', 'v1.2'];
-const GOVERNANCE_LOG_BY_EVENT_TYPE = {
-	deposit: 'Deposit',
-	withdraw: 'Withdrawal',
-};
+const SCAN_LOCK_PREFIX = 'AddressEventScanner.scanNetwork';
 
-watchForDeadlock(SCAN_LOCK);
-
-function sameAddress(a, b) {
-	return !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
+function getScanLock(network) {
+	return `${SCAN_LOCK_PREFIX}.${network}`;
 }
 
 function getDecodedAmount(data) {
@@ -59,27 +61,6 @@ function isHistoricalStateUnavailableError(error) {
 	].filter(Boolean).join(' ').toLowerCase();
 	return message.includes('historical state')
 		|| message.includes('missing trie node');
-}
-
-function parseGovernanceAmountFromReceipt(receipt, contract, eventType, expectedWho) {
-	if (!receipt || !Array.isArray(receipt.logs)) return null;
-	const eventName = GOVERNANCE_LOG_BY_EVENT_TYPE[eventType];
-	if (!eventName) return null;
-	const iface = new ethers.Interface(getAbiByType('governance'));
-	const contractAddress = String(contract.address).toLowerCase();
-	for (const log of receipt.logs) {
-		if (!log.address || String(log.address).toLowerCase() !== contractAddress) continue;
-		let parsed;
-		try {
-			parsed = iface.parseLog(log);
-		} catch (e) {
-			continue;
-		}
-		if (parsed?.name !== eventName) continue;
-		if (expectedWho && !sameAddress(parsed.args.who, expectedWho)) continue;
-		return parsed.args.amount;
-	}
-	return null;
 }
 
 function getValidScanStartDate(value) {
@@ -205,11 +186,6 @@ class AddressEventScanner {
 			}
 			event.type = 'deposit';
 			event.amount = decodedAmount?.toString();
-			if (!event.amount && RECEIPT_EVENT_AA_VERSIONS.includes(meta.aa_version)) {
-				const receipt = await this.#providers[network].getTransactionReceipt(hash);
-				const receiptAmount = parseGovernanceAmountFromReceipt(receipt, contract, event.type, event.trigger_address);
-				event.amount = receiptAmount?.toString();
-			}
 			if (!event.amount) {
 				console.log('deposit amount not found', meta.network, hash);
 				return 'err';
@@ -224,11 +200,6 @@ class AddressEventScanner {
 				: null;
 			event.type = 'withdraw';
 			event.amount = (decodedAmount ?? legacyInternalAmount)?.toString();
-			if (!event.amount && RECEIPT_EVENT_AA_VERSIONS.includes(meta.aa_version)) {
-				const receipt = await this.#providers[network].getTransactionReceipt(hash);
-				const receiptAmount = parseGovernanceAmountFromReceipt(receipt, contract, event.type, event.trigger_address);
-				event.amount = receiptAmount?.toString();
-			}
 			if (!event.amount) {
 				console.log('withdraw amount not found', meta.network, hash);
 				return 'err';
@@ -238,49 +209,35 @@ class AddressEventScanner {
 
 		if (name === 'voteAndDeposit' || name === 'vote') {
 			event.type = 'added_support';
-			if (RECEIPT_EVENT_AA_VERSIONS.includes(meta.aa_version)) {
-				const receipt = await this.#providers[network].getTransactionReceipt(hash);
-				const voteLog = parseVoteLogFromReceipt(receipt, contract, { who: from_address, value: data.value });
-				if (!voteLog) {
-					console.log('vote event log not found', meta.network, hash);
-					return 'err';
-				}
-				event.added_support = voteLog.votes.toString();
-				event.leader_support = voteLog.leader_total_votes.toString();
-				event.leader_value = Formatter.format(contractName, voteLog.leader, meta);
-				event.value = Formatter.format(contractName, voteLog.value, meta);
-				event.support = voteLog.total_votes.toString();
-			} else {
-				const callOptions = getBlockCallOptions(call);
-				const governance = new ethers.Contract(meta.governance_address, getAbiByType('governance'), this.#providers[network]);
-				const c = new ethers.Contract(address, getAbiByType(type), this.#providers[network]);
-				const getState = async (options) => {
-					const balance = options
-						? await governance.balances(from_address, options)
-						: await governance.balances(from_address);
+			const callOptions = getBlockCallOptions(call);
+			const governance = new ethers.Contract(meta.governance_address, getAbiByType('governance'), this.#providers[network]);
+			const c = new ethers.Contract(address, getAbiByType(type), this.#providers[network]);
+			const getState = async (options) => {
+				const balance = options
+					? await governance.balances(from_address, options)
+					: await governance.balances(from_address);
 
-					const votedData = type === 'UintArray'
-						? await DataFetcher.fetchVotedArrayData(c, data, options)
-						: await DataFetcher.fetchVotedData(c, data, options);
-					return { balance, ...votedData };
-				};
-				let state;
-				try {
-					state = await getState(callOptions);
-				} catch (e) {
-					if (!callOptions || !isHistoricalStateUnavailableError(e)) {
-						throw e;
-					}
-					console.warn('historical EVM state unavailable, falling back to latest state', meta.network, hash, callOptions.blockTag);
-					state = await getState();
+				const votedData = type === 'UintArray'
+					? await DataFetcher.fetchVotedArrayData(c, data, options)
+					: await DataFetcher.fetchVotedData(c, data, options);
+				return { balance, ...votedData };
+			};
+			let state;
+			try {
+				state = await getState(callOptions);
+			} catch (e) {
+				if (!callOptions || !isHistoricalStateUnavailableError(e)) {
+					throw e;
 				}
-
-				event.added_support = state.balance.toString();
-				event.leader_support = state.leader_support.toString();
-				event.leader_value = Formatter.format(contractName, state.leader_value, meta);
-				event.value = Formatter.format(contractName, state.value, meta);
-				event.support = state.support.toString();
+				console.warn('historical EVM state unavailable, falling back to latest state', meta.network, hash, callOptions.blockTag);
+				state = await getState();
 			}
+
+			event.added_support = state.balance.toString();
+			event.leader_support = state.leader_support.toString();
+			event.leader_value = Formatter.format(contractName, state.leader_value, meta);
+			event.value = Formatter.format(contractName, state.value, meta);
+			event.support = state.support.toString();
 
 			return event;
 		}
@@ -317,16 +274,9 @@ class AddressEventScanner {
 		return cursor;
 	}
 
-	async #getTargetCalls(network, contract, fromBlock, hasCursor) {
-		return getTargetAddressScanCalls(network, contract.address, fromBlock, {
-			fromDate: hasCursor ? null : this.#scanStartDate.toISOString(),
-			provider: this.#providers[network],
-		});
-	}
-
 	#selectCallsToPublish(targetCalls, hasCursor) {
 		const callsToPublish = [];
-		let cursorBlock = 0;
+		let cursorBlock = Number(targetCalls.safeCursorBlock) || 0;
 		let firstInvalidTimestampBlock = null;
 		for (const call of targetCalls) {
 			if (hasCursor) {
@@ -370,6 +320,12 @@ class AddressEventScanner {
 		return { cursorBlock, failedBlock };
 	}
 
+	async #publishEvents(contract, events) {
+		for (const event of events) {
+			await EventPublisher.publish(contract.meta, event, 'scan');
+		}
+	}
+
 	async #saveScanCursor(network, contract, currentCursor, cursorBlock, callsToPublish, firstUnsafeBlock) {
 		if (firstUnsafeBlock !== null) {
 			const safeCursorBlock = Math.min(cursorBlock, firstUnsafeBlock - 1);
@@ -397,54 +353,178 @@ class AddressEventScanner {
 		}
 	}
 
-	async #scanContract(network, contract) {
-		const currentCursor = await Web3AddressCursors.getLastBlock(network, contract.address);
-		const hasCursor = currentCursor !== null && currentCursor !== undefined;
-		const fromBlock = hasCursor ? currentCursor : 0;
-		const targetCalls = await this.#getTargetCalls(network, contract, fromBlock, hasCursor);
-		const {
-			callsToPublish,
-			cursorBlock: bootstrapCursorBlock,
-			firstInvalidTimestampBlock,
-		} = this.#selectCallsToPublish(targetCalls, hasCursor);
-		const { cursorBlock, failedBlock } = await this.#publishCalls(network, contract, callsToPublish, bootstrapCursorBlock);
-		const unsafeBlocks = [firstInvalidTimestampBlock, failedBlock].filter(v => v !== null && Number.isFinite(v));
-		const firstUnsafeBlock = unsafeBlocks.length ? Math.min(...unsafeBlocks) : null;
-		await this.#saveScanCursor(network, contract, currentCursor, cursorBlock, callsToPublish, firstUnsafeBlock);
-	}
+	async #scanSqdV1Contracts(network, contracts) {
+		const sqdTimestampBlockCache = new Map();
+		const groups = new Map();
 
-	async scanAllNetworks() {
-		const unlock = await mutex.lockOrSkip(SCAN_LOCK);
-		if (!unlock) return;
-
-		try {
-			this.#headBlockCache = {};
-			console.log('address event scan start', (new Date()).toISOString());
-			for (const network of Object.keys(this.#contracts)) {
-				const contracts = this.#contracts[network];
-				if (!contracts || !contracts.length) continue;
-				for (const contract of contracts) {
-					await this.#scanContract(network, contract);
-				}
+		for (const contract of contracts) {
+			const currentCursor = await Web3AddressCursors.getLastBlock(network, contract.address);
+			const hasCursor = currentCursor !== null && currentCursor !== undefined;
+			const fromBlock = hasCursor ? currentCursor : 0;
+			const key = `${hasCursor ? 'cursor' : 'date'}:${fromBlock}`;
+			if (!groups.has(key)) {
+				groups.set(key, { contracts: [], currentCursors: new Map(), fromBlock, hasCursor });
 			}
-			console.log('address event scan done', (new Date()).toISOString());
-		} finally {
-			unlock();
+			const group = groups.get(key);
+			group.contracts.push(contract);
+			group.currentCursors.set(contract.address.toLowerCase(), currentCursor);
+		}
+
+		for (const group of groups.values()) {
+			let fromBlock = group.fromBlock;
+			let hasCursor = group.hasCursor;
+			let chunkIndex = 1;
+			for (;;) {
+				const toBlock = await this.#getLaggedHeadCursor(network, fromBlock);
+				if (!toBlock) break;
+				console.log('address event scan sqd chunk start', network, chunkIndex, `${fromBlock}-${toBlock}`, group.contracts.length, 'contracts');
+				const { callsByAddress, safeCursorBlock } = await getSqdTargetCallsByContract(network, group.contracts, fromBlock, {
+					fromDate: hasCursor ? null : this.#scanStartDate.toISOString(),
+					provider: this.#providers[network],
+					toBlock,
+					sqdTimestampBlockCache,
+				});
+				const totalCalls = [...callsByAddress.values()].reduce((sum, calls) => sum + calls.length, 0);
+				let canContinue = true;
+				for (const contract of group.contracts) {
+					const contractAddress = contract.address.toLowerCase();
+					const currentCursor = group.currentCursors.get(contractAddress);
+					const targetCalls = callsByAddress.get(contractAddress) || [];
+					targetCalls.safeCursorBlock = safeCursorBlock;
+					const {
+						callsToPublish,
+						cursorBlock: bootstrapCursorBlock,
+						firstInvalidTimestampBlock,
+					} = this.#selectCallsToPublish(targetCalls, hasCursor);
+					const { cursorBlock, failedBlock } = await this.#publishCalls(network, contract, callsToPublish, bootstrapCursorBlock);
+					const unsafeBlocks = [firstInvalidTimestampBlock, failedBlock].filter(v => v !== null && Number.isFinite(v));
+					const firstUnsafeBlock = unsafeBlocks.length ? Math.min(...unsafeBlocks) : null;
+					await this.#saveScanCursor(network, contract, currentCursor, cursorBlock, callsToPublish, firstUnsafeBlock);
+					if (firstUnsafeBlock !== null) canContinue = false;
+					else group.currentCursors.set(contractAddress, cursorBlock ? cursorBlock + 1 : currentCursor);
+				}
+				console.log('address event scan sqd chunk done', network, `${fromBlock}-${safeCursorBlock}`, group.contracts.length, 'contracts', totalCalls, 'calls');
+				const nextBlock = Number(safeCursorBlock) + 1;
+				if (!canContinue || !Number.isFinite(nextBlock) || nextBlock <= fromBlock) break;
+				fromBlock = nextBlock;
+				hasCursor = true;
+				chunkIndex += 1;
+			}
 		}
 	}
 
-	async #scanNetwork(network) {
-		const unlock = await mutex.lock(SCAN_LOCK);
+	async #scanEventSourceContracts(network, contracts, sourceName, getEvents) {
+		const eventLogTimestampBlockCache = new Map();
+		const groups = new Map();
+
+		for (const contract of contracts) {
+			const currentCursor = await Web3AddressCursors.getLastBlock(network, contract.address);
+			const hasCursor = currentCursor !== null && currentCursor !== undefined;
+			const fromBlock = hasCursor ? currentCursor : 0;
+			const key = `${hasCursor ? 'cursor' : 'date'}:${fromBlock}`;
+			if (!groups.has(key)) {
+				groups.set(key, { contracts: [], currentCursors: new Map(), fromBlock, hasCursor });
+			}
+			const group = groups.get(key);
+			group.contracts.push(contract);
+			group.currentCursors.set(contract.address.toLowerCase(), currentCursor);
+		}
+
+		for (const group of groups.values()) {
+			let fromBlock = group.fromBlock;
+			let hasCursor = group.hasCursor;
+			let chunkIndex = 1;
+			for (;;) {
+				const toBlock = await this.#getLaggedHeadCursor(network, fromBlock);
+				if (!toBlock) break;
+				console.log(`address event scan ${sourceName} chunk start`, network, chunkIndex, `${fromBlock}-${toBlock}`, group.contracts.length, 'contracts');
+				const { eventsByAddress, cursorBlock } = await getEvents(group.contracts, fromBlock, {
+					fromDate: hasCursor ? null : this.#scanStartDate.toISOString(),
+					toBlock,
+					eventLogTimestampBlockCache,
+				});
+				const totalEvents = [...eventsByAddress.values()].reduce((sum, events) => sum + events.length, 0);
+				for (const contract of group.contracts) {
+					const contractAddress = contract.address.toLowerCase();
+					const currentCursor = group.currentCursors.get(contractAddress);
+					const events = eventsByAddress.get(contractAddress) || [];
+					await this.#publishEvents(contract, events);
+					await this.#saveScanCursor(network, contract, currentCursor, cursorBlock, events, null);
+					group.currentCursors.set(contractAddress, cursorBlock ? cursorBlock + 1 : currentCursor);
+				}
+				console.log(`address event scan ${sourceName} chunk done`, network, `${fromBlock}-${cursorBlock}`, group.contracts.length, 'contracts', totalEvents, 'events');
+				const nextBlock = Number(cursorBlock) + 1;
+				if (!Number.isFinite(nextBlock) || nextBlock <= fromBlock) break;
+				fromBlock = nextBlock;
+				hasCursor = true;
+				chunkIndex += 1;
+			}
+		}
+	}
+
+	async #scanEventLogContracts(network, contracts) {
+		await this.#scanEventSourceContracts(network, contracts, 'logs', (groupContracts, fromBlock, options) => (
+			getEventLogScanEventsByContract(groupContracts, this.#providers[network], fromBlock, {
+				...options,
+				network,
+			})
+		));
+	}
+
+	async #scanSqdLogContracts(network, contracts) {
+		await this.#scanEventSourceContracts(network, contracts, 'sqd logs', (groupContracts, fromBlock, options) => (
+			getSqdLogScanEventsByContract(network, groupContracts, this.#providers[network], fromBlock, options)
+		));
+	}
+
+	async #scanContracts(network, contracts) {
+		const sqdLogContracts = contracts.filter(contract => isSqdLogScanSupported(network, contract));
+		if (sqdLogContracts.length) {
+			await this.#scanSqdLogContracts(network, sqdLogContracts);
+		}
+		const eventLogContracts = contracts.filter(contract => isEventLogScanSupported(contract) && !isSqdLogScanSupported(network, contract));
+		if (eventLogContracts.length) {
+			await this.#scanEventLogContracts(network, eventLogContracts);
+		}
+		const sqdContracts = contracts.filter(contract => !isEventLogScanSupported(contract) && isSqdScanSupported(network, contract));
+		if (sqdContracts.length) {
+			await this.#scanSqdV1Contracts(network, sqdContracts);
+		}
+		const unsupportedContracts = contracts.filter(contract => !isSqdLogScanSupported(network, contract) && !isEventLogScanSupported(contract) && !isSqdScanSupported(network, contract));
+		if (unsupportedContracts.length) {
+			const details = unsupportedContracts
+				.map(contract => `${contract.meta?.network || network}:${contract.meta?.aa_version}:${contract.type}:${contract.address}`)
+				.join(', ');
+			throw Error(`unsupported EVM scanner contract route: ${details}`);
+		}
+	}
+
+	async scanAllNetworks() {
+		console.log('address event scan start', (new Date()).toISOString());
+		const networks = Object.keys(this.#contracts)
+			.filter(network => this.#contracts[network]?.length);
+		await Promise.all(networks.map(network => this.#scanNetwork(network, { skipIfLocked: true })));
+		console.log('address event scan done', (new Date()).toISOString());
+	}
+
+	async #scanNetwork(network, options = {}) {
+		const lockKey = getScanLock(network);
+		const unlock = options.skipIfLocked
+			? await mutex.lockOrSkip(lockKey)
+			: await mutex.lock(lockKey);
+		if (!unlock) {
+			console.log('address event scan network skipped, already running', network);
+			return false;
+		}
 
 		try {
 			delete this.#headBlockCache[network];
 			console.log('address event scan network start', network, (new Date()).toISOString());
 			const contracts = this.#contracts[network];
-			if (!contracts || !contracts.length) return;
-			for (const contract of contracts) {
-				await this.#scanContract(network, contract);
-			}
+			if (!contracts || !contracts.length) return false;
+			await this.#scanContracts(network, contracts);
 			console.log('address event scan network done', network, (new Date()).toISOString());
+			return true;
 		} finally {
 			unlock();
 		}

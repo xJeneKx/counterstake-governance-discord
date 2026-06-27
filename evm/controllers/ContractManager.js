@@ -3,8 +3,8 @@ const { ethers } = require("ethers");
 const Handlers = require('./Handlers');
 const { getAbiByType } = require('../abi/getAbiByType');
 
-const SUPPORTED_AA_VERSIONS = ['v1', 'v1.1', 'v1.2'];
-const REALTIME_AA_VERSIONS = ['v1.1', 'v1.2'];
+const SUPPORTED_AA_VERSIONS = ['v1', 'v1.1', 'v1.2', 'v1.3'];
+const REALTIME_AA_VERSIONS = ['v1.1', 'v1.2', 'v1.3'];
 
 function wait(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
