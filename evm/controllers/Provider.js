@@ -8,8 +8,6 @@ const crashOnError = require('../../utils/crashOnError');
 const HEARTBEAT_INTERVAL = 30 * 1000;
 const PONG_TIMEOUT = 10 * 1000;
 const WS_OPEN = 1;
-const MAX_CONNECT_ERROR_ATTEMPTS = 5;
-const HTTP_HANDSHAKE_ERROR_RE = /^Unexpected server response: \d{3}$/;
 
 class Provider {
 	#network;
@@ -20,7 +18,6 @@ class Provider {
 	#reconnecting = false;
 	#reconnectSourceProvider = null;
 	#openedProviders = new WeakSet();
-	#connectErrorAttempts = 0;
 	
 	_provider = null;
 	events = new EventEmitter();
@@ -86,7 +83,6 @@ class Provider {
 	#onOpen(provider) {
 		if (!this.#isCurrentProvider(provider)) return;
 		this.#openedProviders.add(provider);
-		this.#connectErrorAttempts = 0;
 		this.#reconnecting = false;
 		this.#reconnectSourceProvider = null;
 		this.#startHeartbeat();
@@ -96,11 +92,8 @@ class Provider {
 	#onError(provider, error) {
 		if (!this.#isCurrentProvider(provider)) return;
 		console.error(`[Provider[${this.#network}].ws_error]:`, error);
-		if (HTTP_HANDSHAKE_ERROR_RE.test(error?.message || '')) {
-			return crashOnError(`[Provider[${this.#network}].ws_fatal_http_error]`, error);
-		}
-		if (!this.#openedProviders.has(provider) && ++this.#connectErrorAttempts >= MAX_CONNECT_ERROR_ATTEMPTS) {
-			return crashOnError(`[Provider[${this.#network}].ws_connect_error_limit]`, error);
+		if (!this.#openedProviders.has(provider)) {
+			return crashOnError(`[Provider[${this.#network}].ws_error_before_open]`, error);
 		}
 		this.#reconnect(provider, 'error');
 	}
